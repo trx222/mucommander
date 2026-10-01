@@ -19,6 +19,10 @@
 
 package com.mucommander.bookmark;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /**
  * Represents a bookmark.
  * <p>Bookmarks are simple name/location pairs:
@@ -36,6 +40,12 @@ public class Bookmark implements Cloneable {
     private String name;
     private String location;
     private String parent;
+
+    /**
+     * Protocol-specific properties that belong to the location but are absent from its string form,
+     * such as an SFTP server's SSH key path. Created on first use, as most bookmarks carry none.
+     */
+    private Map<String, String> properties;
 
 
     /**
@@ -125,11 +135,64 @@ public class Bookmark implements Cloneable {
 
 
     /**
+     * Returns the value of a protocol-specific property stored with this bookmark, for instance the
+     * path of the SSH key an SFTP server is reached with.
+     *
+     * <p>Such properties live on {@link com.mucommander.commons.file.FileURL} but are absent from its
+     * string representation, so they would be lost with a bookmark that only stores its location.</p>
+     *
+     * @param  name the property's name.
+     * @return the property's value, <code>null</code> if this bookmark carries no such property.
+     */
+    public String getProperty(String name) {
+        return properties == null ? null : properties.get(name);
+    }
+
+    /**
+     * Stores a protocol-specific property with this bookmark, or removes it when the value is
+     * <code>null</code> or empty.
+     *
+     * @param name  the property's name.
+     * @param value the property's value, <code>null</code> or empty to remove it.
+     */
+    public void setProperty(String name, String value) {
+        boolean changed;
+        if (value == null || value.isEmpty()) {
+            changed = properties != null && properties.remove(name) != null;
+        } else {
+            if (properties == null) {
+                properties = new LinkedHashMap<>();
+            }
+            changed = !value.equals(properties.put(name, value));
+        }
+
+        if (changed) {
+            // Notify registered listeners of the change
+            BookmarkManager.fireBookmarksChanged();
+        }
+    }
+
+    /**
+     * Returns the properties stored with this bookmark.
+     *
+     * @return the properties, empty if this bookmark carries none.
+     */
+    public Map<String, String> getProperties() {
+        return properties == null ? Collections.emptyMap() : Collections.unmodifiableMap(properties);
+    }
+
+    /**
      * Returns a clone of this bookmark.
      */
     @Override
     public Object clone() throws CloneNotSupportedException {
-        return super.clone();
+        Bookmark clone = (Bookmark)super.clone();
+        // Object#clone() copies the reference, which would have the clone and this bookmark share
+        // one property map and edits to either show up in both.
+        if (properties != null) {
+            clone.properties = new LinkedHashMap<>(properties);
+        }
+        return clone;
     }
 
 

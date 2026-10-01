@@ -18,6 +18,7 @@
 
 package com.mucommander.core;
 
+import com.mucommander.bookmark.BookmarkManager;
 import com.mucommander.auth.CredentialsManager;
 import com.mucommander.auth.CredentialsMapping;
 import com.mucommander.commons.file.*;
@@ -614,6 +615,12 @@ public class LocationChanger {
 		public void run() {
 			LOGGER.debug("starting folder change...");
 			boolean folderChangedSuccessfully = false;
+
+			// Restore the protocol-specific properties of a matching bookmark, such as the SSH key an
+			// SFTP server is reached with. They are absent from a URL's string form and would therefore
+			// be missing whenever a location is rebuilt from text: a bookmark, the location field or a
+			// restored tab.
+			BookmarkManager.applyBookmarkProperties(folderURL);
 
 			// Show some progress in the progress bar to give hope
 			folderPanel.setProgressValue(10);

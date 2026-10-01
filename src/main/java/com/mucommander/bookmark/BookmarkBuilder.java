@@ -18,6 +18,8 @@
 
 package com.mucommander.bookmark;
 
+import java.util.Map;
+
 /**
  * Implementations of this interface are used to build bookmark sets.
  * @author Nicolas Rinaudo
@@ -37,6 +39,24 @@ public interface BookmarkBuilder {
      * @throws BookmarkException if an error occurs.
      */
     void addBookmark(String name, String location, String parent) throws BookmarkException;
+
+    /**
+     * Adds a bookmark along with the protocol-specific properties of its location, such as the path of
+     * the SSH key an SFTP server is reached with.
+     *
+     * <p>Implementations that have no use for those properties need not override this method; the
+     * default drops them and adds the bookmark as before.</p>
+     *
+     * @param  name               the bookmark's name.
+     * @param  location           the bookmark's location.
+     * @param  parent             the bookmark's parent, may be <code>null</code>.
+     * @param  properties         the location's protocol-specific properties, may be empty.
+     * @throws BookmarkException  if the bookmark could not be added.
+     */
+    default void addBookmark(String name, String location, String parent, Map<String, String> properties)
+            throws BookmarkException {
+        addBookmark(name, location, parent);
+    }
 
     /**
      * Notifies the builder that the bookmark list is finished.

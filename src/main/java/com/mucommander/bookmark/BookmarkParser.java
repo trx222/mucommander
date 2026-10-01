@@ -18,6 +18,10 @@
 
 package com.mucommander.bookmark;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xml.sax.Attributes;
@@ -42,6 +46,10 @@ class BookmarkParser extends DefaultHandler implements BookmarkConstants {
     private String bookmarkLocation;
     /** Variable used for XML parsing */
     private String bookmarkParent;
+    /** Protocol-specific properties collected for the bookmark currently being parsed */
+    private Map<String, String> bookmarkProperties;
+    /** Name of the property element currently being parsed, taken from its attribute */
+    private String propertyName;
     /** Variable used for XML parsing */
     private StringBuilder characters;
     /** Receives bookmarks events. */
@@ -120,6 +128,10 @@ class BookmarkParser extends DefaultHandler implements BookmarkConstants {
             bookmarkName = null;
             bookmarkLocation = null;
             bookmarkParent = null;
+            bookmarkProperties = new LinkedHashMap<>();
+        } else if (qName.equals(ELEMENT_PROPERTY)) {
+            // The name lives in an attribute, the value in the element's text
+            propertyName = attributes.getValue(ATTRIBUTE_NAME);
         }
     }
 
@@ -140,6 +152,12 @@ class BookmarkParser extends DefaultHandler implements BookmarkConstants {
                 break;
             case ELEMENT_PARENT:
                 bookmarkParent = characters.toString().trim();
+                break;
+            case ELEMENT_PROPERTY:
+                if (propertyName != null && !propertyName.isEmpty() && bookmarkProperties != null) {
+                    bookmarkProperties.put(propertyName, characters.toString().trim());
+                }
+                propertyName = null;
                 break;
             // Note: url element has been deprecated in 0.8 beta3 but is still checked against for upward compatibility.
 //            case ELEMENT_URL:
@@ -172,7 +190,8 @@ class BookmarkParser extends DefaultHandler implements BookmarkConstants {
         }
 
         try {
-            builder.addBookmark(bookmarkName, bookmarkLocation, bookmarkParent);
+            builder.addBookmark(bookmarkName, bookmarkLocation, bookmarkParent,
+                    bookmarkProperties == null ? Collections.emptyMap() : bookmarkProperties);
         } catch (BookmarkException e) {
             throw new SAXException(e);
         }

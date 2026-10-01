@@ -42,6 +42,12 @@ interface BookmarkConstants {
     /** Bookmark parent name */
     String ELEMENT_PARENT  = "parent";
 
+    /** Protocol-specific property of a bookmark's location, e.g. an SFTP server's SSH key path */
+    String ELEMENT_PROPERTY  = "property";
+
+    /** Name of a {@link #ELEMENT_PROPERTY} element */
+    String ATTRIBUTE_NAME    = "name";
+
 //    /** Bookmark URL: was used up until 0.8 beta3 nightly builds and replaced by 'location' element. Kept
 //     * for upward compatibility */
 //    String ELEMENT_URL       = "url";

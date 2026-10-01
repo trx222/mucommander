@@ -24,6 +24,8 @@ import com.mucommander.utils.xml.XmlWriter;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.Collections;
+import java.util.Map;
 
 
 /**
@@ -62,6 +64,12 @@ class BookmarkWriter implements BookmarkConstants, BookmarkBuilder {
     }
 
     public void addBookmark(String name, String location, String parent) throws BookmarkException {
+        addBookmark(name, location, parent, Collections.emptyMap());
+    }
+
+    @Override
+    public void addBookmark(String name, String location, String parent, Map<String, String> properties)
+            throws BookmarkException {
         try {
             out.startElement(ELEMENT_BOOKMARK);
             out.println();
@@ -69,6 +77,9 @@ class BookmarkWriter implements BookmarkConstants, BookmarkBuilder {
             writeElement(ELEMENT_NAME, name);
             writeElement(ELEMENT_LOCATION, location);
             writeElement(ELEMENT_PARENT, parent);
+            for (Map.Entry<String, String> property : properties.entrySet()) {
+                writeProperty(property.getKey(), property.getValue());
+            }
 
             out.endElement(ELEMENT_BOOKMARK);
         } catch(IOException e) {
@@ -83,5 +94,23 @@ class BookmarkWriter implements BookmarkConstants, BookmarkBuilder {
             out.writeCData(value);
             out.endElement(name);
         }
+    }
+
+
+    /**
+     * Writes one protocol-specific property, whose name goes into an attribute so that the value can be
+     * any string without needing a naming convention for the element.
+     *
+     * @param  name        the property's name.
+     * @param  value       the property's value.
+     * @throws IOException if writing fails.
+     */
+    private void writeProperty(String name, String value) throws IOException {
+        XmlAttributes attributes = new XmlAttributes();
+        attributes.add(ATTRIBUTE_NAME, name);
+
+        out.startElement(ELEMENT_PROPERTY, attributes);
+        out.writeCData(value);
+        out.endElement(ELEMENT_PROPERTY);
     }
 }

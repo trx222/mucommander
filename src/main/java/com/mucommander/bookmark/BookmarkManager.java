@@ -18,6 +18,8 @@
 
 package com.mucommander.bookmark;
 
+import java.util.Map;
+
 import com.mucommander.PlatformManager;
 import com.mucommander.bookmark.file.BookmarkProtocolProvider;
 import com.mucommander.commons.collections.AlteredVector;
@@ -29,6 +31,7 @@ import com.mucommander.io.backup.BackupInputStream;
 import com.mucommander.io.backup.BackupOutputStream;
 
 import java.io.*;
+import java.net.MalformedURLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.WeakHashMap;
@@ -99,7 +102,8 @@ public class BookmarkManager implements VectorChangeListener {
     private static synchronized void buildBookmarks(BookmarkBuilder builder) throws BookmarkException {
         builder.startBookmarks();
         for (Bookmark bookmark : bookmarks) {
-            builder.addBookmark(bookmark.getName(), bookmark.getLocation(), bookmark.getParent());
+            builder.addBookmark(bookmark.getName(), bookmark.getLocation(), bookmark.getParent(),
+                    bookmark.getProperties());
         }
         builder.endBookmarks();
     }
@@ -425,6 +429,93 @@ public class BookmarkManager implements VectorChangeListener {
 
     // - Bookmark loading ------------------------------------------------------
     // -------------------------------------------------------------------------
+    /**
+     * Copies the protocol-specific properties of the bookmark matching the given location onto it, for
+     * instance the path of the SSH key an SFTP server is reached with.
+     *
+     * <p>Those properties are not part of a URL's string form, so they are lost whenever a location is
+     * reconstructed from text: from a bookmark, from the location field or from a saved tab. Restoring
+     * them here means every one of those paths reaches the server the same way.</p>
+     *
+     * <p>Properties already carried by the location are left alone, so an explicitly chosen key still
+     * wins over the stored one. Where several bookmarks match, the one with the longest matching path
+     * is used, which is the most specific.</p>
+     *
+     * @param url the location to complete, may be <code>null</code>.
+     */
+    public static void applyBookmarkProperties(FileURL url) {
+        if (url == null) {
+            return;
+        }
+
+        Bookmark best = null;
+        int bestPathLength = -1;
+        for (Bookmark bookmark : bookmarks) {
+            if (bookmark.getProperties().isEmpty()) {
+                continue;
+            }
+            FileURL bookmarkURL;
+            try {
+                bookmarkURL = FileURL.getFileURL(bookmark.getLocation());
+            } catch (MalformedURLException e) {
+                // A bookmark may hold a plain path rather than a URL; it carries no server properties.
+                continue;
+            }
+            if (!isSameServer(bookmarkURL, url) || !isPathPrefix(bookmarkURL.getPath(), url.getPath())) {
+                continue;
+            }
+            int pathLength = bookmarkURL.getPath() == null ? 0 : bookmarkURL.getPath().length();
+            if (pathLength > bestPathLength) {
+                best = bookmark;
+                bestPathLength = pathLength;
+            }
+        }
+
+        if (best != null) {
+            for (Map.Entry<String, String> property : best.getProperties().entrySet()) {
+                if (url.getProperty(property.getKey()) == null) {
+                    url.setProperty(property.getKey(), property.getValue());
+                }
+            }
+        }
+    }
+
+    /**
+     * Returns whether two locations name the same server, i.e. agree on scheme, host and port.
+     *
+     * @param  first  the first location.
+     * @param  second the second location.
+     * @return <code>true</code> if both name the same server.
+     */
+    private static boolean isSameServer(FileURL first, FileURL second) {
+        if (first.getHost() == null || second.getHost() == null) {
+            return false;
+        }
+        return first.getScheme().equalsIgnoreCase(second.getScheme())
+                && first.getHost().equalsIgnoreCase(second.getHost())
+                && first.getPort() == second.getPort();
+    }
+
+    /**
+     * Returns whether one path is the given path or one of its parents, comparing whole segments so
+     * that <code>/var/www</code> does not match <code>/var/www-old</code>.
+     *
+     * @param  prefix the candidate parent path.
+     * @param  path   the path to test.
+     * @return <code>true</code> if <code>prefix</code> covers <code>path</code>.
+     */
+    private static boolean isPathPrefix(String prefix, String path) {
+        if (prefix == null || prefix.isEmpty() || "/".equals(prefix)) {
+            return true;
+        }
+        if (path == null) {
+            return false;
+        }
+        String trimmed = prefix.endsWith("/") ? prefix.substring(0, prefix.length() - 1) : prefix;
+        return path.equals(trimmed) || path.startsWith(trimmed + "/");
+    }
+
+
     private static class Loader implements BookmarkBuilder {
         public void startBookmarks() {
 
@@ -436,6 +527,15 @@ public class BookmarkManager implements VectorChangeListener {
 
         public void addBookmark(String name, String location, String parent) {
             BookmarkManager.addBookmark(new Bookmark(name, location, parent));
+        }
+
+        @Override
+        public void addBookmark(String name, String location, String parent, Map<String, String> properties) {
+            Bookmark bookmark = new Bookmark(name, location, parent);
+            for (Map.Entry<String, String> property : properties.entrySet()) {
+                bookmark.setProperty(property.getKey(), property.getValue());
+            }
+            BookmarkManager.addBookmark(bookmark);
         }
     }
 }
