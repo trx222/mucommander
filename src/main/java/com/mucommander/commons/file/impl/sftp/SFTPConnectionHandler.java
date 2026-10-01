@@ -17,8 +17,10 @@ import com.sshtools.ssh2.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.util.Collections;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -99,72 +101,68 @@ class SFTPConnectionHandler extends ConnectionHandler {
             List<String> authMethods = new ArrayList<>(Arrays.asList(sshClient.getAuthenticationMethods(credentials.getLogin())));
             LOGGER.info("getAvailableAuthMethods()={}", sshClient.getAuthenticationMethods(credentials.getLogin()));
 
-            SshAuthentication authClient = null;
-            String privateKeyPath = realm.getProperty(SFTPFile.PRIVATE_KEY_PATH_PROPERTY_NAME);
-            // Try public key first. Don't try other methods if there's a key file defined
-            if (authMethods.contains(PUBLIC_KEY_AUTH_METHOD) && privateKeyPath != null) {
-                LOGGER.info("Using {} authentication method", PUBLIC_KEY_AUTH_METHOD);
+            // Public key first: the key configured for this server if there is one, otherwise the
+            // standard keys in ~/.ssh, which is what a command line ssh client would reach for.
+            boolean authenticated = false;
+            String configuredKey = realm.getProperty(SFTPFile.PRIVATE_KEY_PATH_PROPERTY_NAME);
+            if (authMethods.contains(PUBLIC_KEY_AUTH_METHOD)) {
+                List<String> keyPaths = configuredKey != null
+                        ? Collections.singletonList(configuredKey)
+                        : findDefaultPrivateKeys();
+                for (String keyPath : keyPaths) {
+                    Ssh2PublicKeyAuthentication pk = createPublicKeyAuthentication(keyPath, credentials);
+                    if (pk != null && tryAuthenticate(pk)) {
+                        LOGGER.info("Authenticated with key {}", keyPath);
+                        authenticated = true;
+                        break;
+                    }
+                }
+            }
 
-                Ssh2PublicKeyAuthentication pk = new Ssh2PublicKeyAuthentication();
-                pk.setUsername(credentials.getLogin());
+            // Fall back to an interactive method when no key got us in. This also covers the case of a
+            // key that the server rejected, where asking for a password is better than giving up.
+            if (!authenticated) {
+                SshAuthentication authClient;
+                // Use 'keyboard-interactive' method only if 'password' auth method is not available and
+                // 'keyboard-interactive' is supported by the server
+                if (!authMethods.contains(PASSWORD_AUTH_METHOD)
+                        && authMethods.contains(KEYBOARD_INTERACTIVE_AUTH_METHOD)) {
+                    LOGGER.info("Using {} authentication method", KEYBOARD_INTERACTIVE_AUTH_METHOD);
 
-                // Throw an AuthException if problems with private key file
-                try {
-                    SshPrivateKeyFile pkfile = SshPrivateKeyFileFactory.parse(new FileInputStream(privateKeyPath));
-                    SshKeyPair pair = pkfile.toKeyPair(pkfile.isPassphraseProtected() ? credentials.getPassword() : null);
-                    pk.setPrivateKey(pair.getPrivateKey());
-                    pk.setPublicKey(pair.getPublicKey());
-                } catch (IOException | InvalidPassphraseException e) {
-                    LOGGER.error("Keys error", e);
-                    privateKeyPath = null;  // try to authorize via password on error
-//                    throwAuthException("Invalid private key file or passphrase");  // Todo: localize this entry
-//                } catch (IOException e) {
-//                    e.printStackTrace();
-//                    throwAuthException("Error reading private key file");  // Todo: localize this entry
+                    KBIAuthentication kbi = new KBIAuthentication();
+                    kbi.setUsername(credentials.getLogin());
+
+                    // Fake keyboard password input
+                    kbi.setKBIRequestHandler((name, instruction, prompts) -> {
+                        // Workaround for what seems to be a bug in J2SSH: this method is called twice, first time
+                        // with a valid KBIPrompt array, second time with null
+                        if (prompts == null) {
+                            LOGGER.trace("prompts is null!");
+                            return false;
+                        }
+
+                        for (int i = 0; i < prompts.length; i++) {
+                            LOGGER.trace("prompts[{}]={}", i, prompts[i].getPrompt());
+                            prompts[i].setResponse(credentials.getPassword());
+                        }
+                        return true;
+                    });
+
+                    authClient = kbi;
+                }
+                // Default to 'password' method, even if server didn't report as being supported
+                else {
+                    LOGGER.info("Using {} authentication method", PASSWORD_AUTH_METHOD);
+
+                    Ssh2PasswordAuthentication pwd = new Ssh2PasswordAuthentication();
+                    pwd.setUsername(credentials.getLogin());
+                    pwd.setPassword(credentials.getPassword());
+
+                    authClient = pwd;
                 }
 
-                authClient = pk;
+                authenticate(authClient);
             }
-            // Use 'keyboard-interactive' method only if 'password' auth method is not available and
-            // 'keyboard-interactive' is supported by the server
-            //else
-            if (!authMethods.contains(PASSWORD_AUTH_METHOD) && authMethods.contains(KEYBOARD_INTERACTIVE_AUTH_METHOD) &&
-                    privateKeyPath == null) {
-                LOGGER.info("Using {} authentication method", KEYBOARD_INTERACTIVE_AUTH_METHOD);
-
-                KBIAuthentication kbi = new KBIAuthentication();
-                kbi.setUsername(credentials.getLogin());
-
-                // Fake keyboard password input
-                kbi.setKBIRequestHandler((name, instruction, prompts) -> {
-                    // Workaround for what seems to be a bug in J2SSH: this method is called twice, first time
-                    // with a valid KBIPrompt array, second time with null
-                    if (prompts == null) {
-                        LOGGER.trace("prompts is null!");
-                        return false;
-                    }
-
-                    for (int i = 0; i < prompts.length; i++) {
-                        LOGGER.trace("prompts[{}]={}", i, prompts[i].getPrompt());
-                        prompts[i].setResponse(credentials.getPassword());
-                    }
-                    return true;
-                });
-
-                authClient = kbi;
-            }
-            // Default to 'password' method, even if server didn't report as being supported
-            else if (privateKeyPath == null) {
-                LOGGER.info("Using {} authentication method", PASSWORD_AUTH_METHOD);
-
-                Ssh2PasswordAuthentication pwd = new Ssh2PasswordAuthentication();
-                pwd.setUsername(credentials.getLogin());
-                pwd.setPassword(credentials.getPassword());
-
-                authClient = pwd;
-            }
-
-            authenticate(authClient);
             // Init SFTP connections
             sftpClient = new SftpClient(sshClient);
             SshSession session = sshClient.openSessionChannel();
@@ -191,6 +189,74 @@ class SFTPConnectionHandler extends ConnectionHandler {
             } else {
                 throw new IOException(e);
             }
+        }
+    }
+
+    /**
+     * The private keys a command line ssh client would offer when none was named, in the order it
+     * tries them.
+     */
+    private static final String[] DEFAULT_KEY_NAMES = {"id_ed25519", "id_ecdsa", "id_rsa", "id_dsa"};
+
+    /**
+     * Returns the standard private keys present in the user's <code>.ssh</code> folder.
+     *
+     * <p>This is what makes a server reachable without naming a key first: the common case is one
+     * key sitting in its usual place, and having to pick it by hand for every server would be
+     * needless work.</p>
+     *
+     * @return the paths of the keys that exist, in the order they should be tried.
+     */
+    private static List<String> findDefaultPrivateKeys() {
+        List<String> paths = new ArrayList<>();
+        File sshFolder = new File(System.getProperty("user.home"), ".ssh");
+        for (String name : DEFAULT_KEY_NAMES) {
+            File key = new File(sshFolder, name);
+            if (key.isFile() && key.canRead()) {
+                paths.add(key.getAbsolutePath());
+            }
+        }
+        return paths;
+    }
+
+    /**
+     * Builds public key authentication from the key stored at the given path.
+     *
+     * @param  keyPath     path of the private key.
+     * @param  credentials the credentials, whose password doubles as the key's passphrase.
+     * @return the authentication, <code>null</code> if the key cannot be read or unlocked.
+     */
+    private Ssh2PublicKeyAuthentication createPublicKeyAuthentication(String keyPath, Credentials credentials) {
+        try (FileInputStream in = new FileInputStream(keyPath)) {
+            SshPrivateKeyFile keyFile = SshPrivateKeyFileFactory.parse(in);
+            SshKeyPair pair = keyFile.toKeyPair(keyFile.isPassphraseProtected() ? credentials.getPassword() : null);
+
+            Ssh2PublicKeyAuthentication pk = new Ssh2PublicKeyAuthentication();
+            pk.setUsername(credentials.getLogin());
+            pk.setPrivateKey(pair.getPrivateKey());
+            pk.setPublicKey(pair.getPublicKey());
+            return pk;
+        } catch (IOException | InvalidPassphraseException e) {
+            // An unreadable key or a wrong passphrase only rules out this one key, so the next
+            // candidate and ultimately password authentication still get their turn.
+            LOGGER.info("Cannot use key {}: {}", keyPath, e.toString());
+            return null;
+        }
+    }
+
+    /**
+     * Attempts one authentication without treating a rejection as an error, so that further keys and
+     * methods can be tried afterwards.
+     *
+     * @param  authClient the authentication to attempt.
+     * @return <code>true</code> if it succeeded.
+     */
+    private boolean tryAuthenticate(SshAuthentication authClient) {
+        try {
+            return sshClient.authenticate(authClient) == SshAuthentication.COMPLETE;
+        } catch (Exception e) {
+            LOGGER.info("Authentication attempt failed", e);
+            return false;
         }
     }
 
