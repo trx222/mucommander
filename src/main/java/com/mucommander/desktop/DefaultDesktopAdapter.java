@@ -88,10 +88,30 @@ public class DefaultDesktopAdapter implements DesktopAdapter {
     }
 
     /**
+     * Returns <code>true</code> if the specified mouse event was triggered by the specified button.
+     * <p>
+     * <code>MOUSE_CLICKED</code> and <code>MOUSE_RELEASED</code> events no longer carry the button's
+     * <code>..._DOWN_MASK</code> in their extended modifiers, as the button is already up by the time they
+     * are fired. The button named by {@link MouseEvent#getButton()} is therefore used whenever the event
+     * names one; events that name none (<code>MOUSE_DRAGGED</code>, <code>MOUSE_MOVED</code>) fall back to
+     * the extended modifiers.
+     *
+     * @param  e        event to check.
+     * @param  button   one of the <code>MouseEvent.BUTTONn</code> constants.
+     * @param  downMask the <code>MouseEvent.BUTTONn_DOWN_MASK</code> constant matching <code>button</code>.
+     * @return          <code>true</code> if the event describes the specified button, <code>false</code> otherwise.
+     */
+    protected static boolean isButton(MouseEvent e, int button, int downMask) {
+        if (e.getButton() != MouseEvent.NOBUTTON) {
+            return e.getButton() == button;
+        }
+        return (e.getModifiersEx() & downMask) != 0;
+    }
+
+    /**
      * Returns <code>true</code> if the specified mouse event describes a left click.
      * <p>
-     * This method will return <code>true</code> if <code>(e.getModifiers() &amp; MouseEvent.BUTTON1_MASK)</code>
-     * doesn't equal 0.
+     * This method delegates to {@link #isButton(MouseEvent,int,int)} for button 1.
      *
      * @param  e event to check.
      * @return   <code>true</code> if the specified event is a left-click, <code>false</code> otherwise.
@@ -99,14 +119,13 @@ public class DefaultDesktopAdapter implements DesktopAdapter {
      * @see      #isMiddleMouseButton(MouseEvent)
      */
     public boolean isLeftMouseButton(MouseEvent e) {
-        return (e.getModifiersEx() & MouseEvent.BUTTON1_DOWN_MASK) != 0;
+        return isButton(e, MouseEvent.BUTTON1, MouseEvent.BUTTON1_DOWN_MASK);
     }
 
     /**
      * Returns <code>true</code> if the specified mouse event describes a middle click.
      * <p>
-     * This method will return <code>true</code> if <code>(e.getModifiers() &amp; MouseEvent.BUTTON3_MASK)</code>
-     * doesn't equal 0.
+     * This method delegates to {@link #isButton(MouseEvent,int,int)} for button 3.
      *
      * @param  e event to check.
      * @return   <code>true</code> if the specified event is a middle-click, <code>false</code> otherwise.
@@ -114,14 +133,13 @@ public class DefaultDesktopAdapter implements DesktopAdapter {
      * @see      #isLeftMouseButton(MouseEvent)
      */
     public boolean isRightMouseButton(MouseEvent e) {
-        return (e.getModifiersEx() & MouseEvent.BUTTON3_DOWN_MASK) !=0;
+        return isButton(e, MouseEvent.BUTTON3, MouseEvent.BUTTON3_DOWN_MASK);
     }
 
     /**
      * Returns <code>true</code> if the specified mouse event describes a right click.
      * <p>
-     * This method will return <code>true</code> if <code>(e.getModifiers() &amp; MouseEvent.BUTTON2_MASK)</code>
-     * doesn't equal 0.
+     * This method delegates to {@link #isButton(MouseEvent,int,int)} for button 2.
      *
      * @param  e event to check.
      * @return   <code>true</code> if the specified event is a right-click, <code>false</code> otherwise.
@@ -129,7 +147,7 @@ public class DefaultDesktopAdapter implements DesktopAdapter {
      * @see      #isMiddleMouseButton(MouseEvent)
      */
     public boolean isMiddleMouseButton(MouseEvent e) {
-        return (e.getModifiersEx() & MouseEvent.BUTTON2_DOWN_MASK) != 0;
+        return isButton(e, MouseEvent.BUTTON2, MouseEvent.BUTTON2_DOWN_MASK);
     }
 
     /**
