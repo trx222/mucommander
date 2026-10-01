@@ -236,6 +236,12 @@ public class DefaultSchemeParser implements SchemeParser {
             // Filenames may contain @ chars, so atPos must be lower than next separator's position (if any)
             if (atPos != -1 && (separatorPos == -1 || atPos < separatorPos)) {
                 colonPos = authority.indexOf(':');
+                // The colon separating login from password has to sit within the user information,
+                // that is before the '@'. A colon found after it belongs to the port instead, as in
+                // "user@host:1122", where taking it would make the password range run backwards.
+                if (colonPos > atPos) {
+                    colonPos = -1;
+                }
                 String login = URLDecoder.decode(authority.substring(0, colonPos == -1 ? atPos : colonPos), StandardCharsets.UTF_8);
                 String password;
                 if (colonPos != -1) {
