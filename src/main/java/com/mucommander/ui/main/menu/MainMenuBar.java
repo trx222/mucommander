@@ -208,6 +208,9 @@ public class MainMenuBar extends JMenuBar implements ActionListener, MenuListene
         MenuToolkit.addMenuItem(markMenu, ActionManager.getActionInstance(CompareFoldersAction.Descriptor.ACTION_ID, mainFrame), menuItemMnemonicHelper);
         MenuToolkit.addMenuItem(markMenu, ActionManager.getActionInstance(CompareFolderFilesAction.Descriptor.ACTION_ID, mainFrame), menuItemMnemonicHelper);
 
+        markMenu.add(new TMenuSeparator());
+        MenuToolkit.addMenuItem(markMenu, ActionManager.getActionInstance(SynchronizeDirectoriesAction.Descriptor.ACTION_ID, mainFrame), menuItemMnemonicHelper);
+
         add(markMenu);
 
         // View menu

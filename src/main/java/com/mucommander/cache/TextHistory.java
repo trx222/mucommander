@@ -39,7 +39,8 @@ public class TextHistory {
         HEX_DATA_SEARCH("search-hex.history"),
         FILE_NAME("search-files.history"),
         CALCULATOR("calculator.history"),
-        EDITOR_BOOKMARKS("editor.bookmarks");
+        EDITOR_BOOKMARKS("editor.bookmarks"),
+        SYNC_FILE_MASK("sync-mask.history");
 
         private final String fileName;
         Type(String fileName) {
