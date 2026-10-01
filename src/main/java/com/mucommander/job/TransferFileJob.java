@@ -21,6 +21,8 @@ package com.mucommander.job;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.HashSet;
+import java.util.Set;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -89,6 +91,9 @@ public abstract class TransferFileJob extends FileJob {
 
     /** InputStream currently being processed, may be null */
     private ThroughputLimitInputStream tlin;
+
+    /** The files this job was started with, for the lookup in {@link #isInBaseFiles(AbstractFile)}. */
+    private Set<AbstractFile> baseFiles;
 
     /** ThroughputLimit in bytes per second, -1 initially (no limit)
      * -- GETTER --
@@ -603,6 +608,23 @@ public abstract class TransferFileJob extends FileJob {
     }
 
     /**
+     * Returns whether the given file is one of the files this job was started with.
+     *
+     * <p>Backed by a hash set rather than a scan of the list: this is asked on every refresh of the
+     * progress dialog, and scanning a selection of n files turned that into n comparisons each
+     * time.</p>
+     *
+     * @param  file the file to look for.
+     * @return <code>true</code> if the file is part of the base selection.
+     */
+    private boolean isInBaseFiles(AbstractFile file) {
+        if (baseFiles == null) {
+            baseFiles = new HashSet<>(files);
+        }
+        return baseFiles.contains(file);
+    }
+
+    /**
      * Method overridden to return a more accurate percentage of job processed so far by taking into account the current
      * file's percentage of completion.
      */
@@ -612,7 +634,8 @@ public abstract class TransferFileJob extends FileJob {
         int nbFiles = getNbFiles();
 
         // If file is in base folder and is not a directory...
-        if (getCurrentFile() != null && nbFilesProcessed != nbFiles && files.contains(getCurrentFile()) && !getCurrentFile().isDirectory()) {
+        if (getCurrentFile() != null && nbFilesProcessed != nbFiles && isInBaseFiles(getCurrentFile())
+                && !getCurrentFile().isDirectory()) {
             // Add current file's progress
             long currentFileSize = getCurrentFile().getSize();
             if (currentFileSize > 0) {

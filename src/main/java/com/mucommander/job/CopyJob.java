@@ -108,8 +108,10 @@ public class CopyJob extends AbstractCopyJob {
         // Destination folder
         AbstractFile destFolder = recurseParams == null ? baseDestFolder : (AbstractFile)recurseParams;
 		
-        // Is current file in base folder ?
-        boolean isFileInBaseFolder = files.contains(file);
+        // Is current file in base folder ? run() passes no recursion parameters for the files of the
+        // base set, so this says the same as searching the set, but without scanning it: that search
+        // ran once per file and made a copy of n files cost n*n comparisons.
+        boolean isFileInBaseFolder = recurseParams == null;
 
         // Determine filename in destination
         String destFileName = (isFileInBaseFolder && newName != null) ? newName : file.getName();

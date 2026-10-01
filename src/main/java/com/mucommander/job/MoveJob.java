@@ -88,8 +88,9 @@ public class MoveJob extends AbstractCopyJob {
         // Destination folder
         AbstractFile destFolder = recurseParams == null ? baseDestFolder : (AbstractFile)recurseParams;
 		
-        // Is current file at the base folder level ?
-        boolean isFileInBaseFolder = files.contains(file);
+        // Is current file at the base folder level ? See CopyJob#processFile: run() passes no
+        // recursion parameters for the files of the base set, which answers this in constant time.
+        boolean isFileInBaseFolder = recurseParams == null;
 
         // Determine filename in destination
         String originalName = file.getName();
