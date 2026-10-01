@@ -19,6 +19,7 @@ package com.mucommander.ui.dialog.bookmark
 
 import com.mucommander.bookmark.Bookmark
 import com.mucommander.bookmark.BookmarkManager
+import com.mucommander.commons.file.impl.sftp.SFTPFile
 import com.mucommander.ui.action.ActionProperties
 import com.mucommander.ui.action.impl.AddBookmarkAction
 import com.mucommander.ui.dialog.DialogToolkit
@@ -54,8 +55,15 @@ class AddBookmarkDialog(mainFrame: MainFrame) : FocusDialog(
     private val addButton: JButton
     private val cancelButton: JButton
 
+    /**
+     * Path of the SSH key the current folder is reached with, null for other protocols. It belongs to
+     * the location but is absent from its string form, so it is carried over to the bookmark by hand.
+     */
+    private val privateKeyPath: String?
+
     init {
         val currentFolder = mainFrame.activePanel.currentFolder
+        privateKeyPath = currentFolder.url.getProperty(SFTPFile.PRIVATE_KEY_PATH_PROPERTY_NAME)
 
         // Text fields panel
         val compPanel = XAlignedComponentPanel().apply {
@@ -121,13 +129,13 @@ class AddBookmarkDialog(mainFrame: MainFrame) : FocusDialog(
             dispose()
 
             // Add bookmark and write bookmarks file to disk
-            BookmarkManager.addBookmark(
-                Bookmark(
-                    edtName.getText(),
-                    edtLocation.getText(),
-                    cbParent.getSelectedParent()
-                )
+            val bookmark = Bookmark(
+                edtName.getText(),
+                edtLocation.getText(),
+                cbParent.getSelectedParent()
             )
+            privateKeyPath?.let { bookmark.setProperty(SFTPFile.PRIVATE_KEY_PATH_PROPERTY_NAME, it) }
+            BookmarkManager.addBookmark(bookmark)
             try {
                 BookmarkManager.writeBookmarks(false)
             } catch (_: Exception) {

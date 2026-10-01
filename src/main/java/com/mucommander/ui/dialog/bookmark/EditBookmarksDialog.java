@@ -25,6 +25,7 @@ import com.mucommander.ui.action.ActionProperties;
 import com.mucommander.ui.action.impl.EditBookmarksAction;
 import com.mucommander.ui.dialog.FocusDialog;
 import com.mucommander.ui.helper.MnemonicHelper;
+import com.mucommander.commons.file.impl.sftp.SFTPFile;
 import com.mucommander.ui.layout.XAlignedComponentPanel;
 import com.mucommander.ui.layout.XBoxPanel;
 import com.mucommander.ui.layout.YBoxPanel;
@@ -64,6 +65,9 @@ public class EditBookmarksDialog extends FocusDialog implements ActionListener, 
     private final JTextField edtName;
     private final JLabel locationLabel;
     private final JTextField edtLocation;
+    /** Path of the SSH key an SFTP bookmark is reached with, empty for other protocols */
+    private final JTextField edtPrivateKey;
+    private final JLabel privateKeyLabel;
     private final BookmarkParentComboBox cbParent;
     // separatorNoticePrefix is required to keep the size of the 1st column
     private final JLabel separatorNoticePrefix;
@@ -118,6 +122,13 @@ public class EditBookmarksDialog extends FocusDialog implements ActionListener, 
         this.locationLabel = new JLabel(i18n("location")+":");
         edtLocation.getDocument().addDocumentListener(this);
         compPanel.addRow(locationLabel, edtLocation, 10);
+
+        // Key file of an SFTP server. It belongs to the location but is absent from its string form,
+        // so it is stored as a property of the bookmark.
+        this.edtPrivateKey = new FilePathField();
+        this.privateKeyLabel = new JLabel(i18n("server_connect_dialog.private_key")+":");
+        edtPrivateKey.getDocument().addDocumentListener(this);
+        compPanel.addRow(privateKeyLabel, edtPrivateKey, 10);
 
         this.cbParent = new BookmarkParentComboBox();
         cbParent.addActionListener(this);
@@ -205,6 +216,7 @@ public class EditBookmarksDialog extends FocusDialog implements ActionListener, 
         String nameValue = null;
         String locationValue = null;
         String parentValue = null;
+        String privateKeyValue = null;
 
         boolean componentsEnabled = false;
 
@@ -215,6 +227,7 @@ public class EditBookmarksDialog extends FocusDialog implements ActionListener, 
             nameValue = b.getName();
             locationValue = b.getLocation();
             parentValue = b.getParent();
+            privateKeyValue = b.getProperty(SFTPFile.PRIVATE_KEY_PATH_PROPERTY_NAME);
         }
 
         // Ignore text field events while setting values
@@ -225,6 +238,12 @@ public class EditBookmarksDialog extends FocusDialog implements ActionListener, 
 
         edtLocation.setText(locationValue);
         edtLocation.setEnabled(componentsEnabled);
+
+        // A key only means something for SFTP, so the field follows the location's protocol.
+        boolean sftp = locationValue != null && locationValue.toLowerCase().startsWith("sftp://");
+        edtPrivateKey.setText(privateKeyValue);
+        edtPrivateKey.setEnabled(componentsEnabled && sftp);
+        privateKeyLabel.setEnabled(componentsEnabled && sftp);
 
         cbParent.setChildName(nameValue);
         cbParent.setSelectedParent(parentValue);
@@ -308,6 +327,15 @@ public class EditBookmarksDialog extends FocusDialog implements ActionListener, 
             selectedBookmark.setLocation(location);
             bookmarkList.itemModified(selectedIndex, false);
             btnGoto.setEnabled(location != null && !location.isEmpty());
+
+            // The protocol may have changed, which decides whether a key applies at all.
+            boolean sftp = location != null && location.toLowerCase().startsWith("sftp://");
+            edtPrivateKey.setEnabled(sftp);
+            privateKeyLabel.setEnabled(sftp);
+        }
+        // Update SSH key
+        else if (sourceDocument == edtPrivateKey.getDocument()) {
+            selectedBookmark.setProperty(SFTPFile.PRIVATE_KEY_PATH_PROPERTY_NAME, edtPrivateKey.getText().trim());
         } else {
             selectedBookmark.setParent(cbParent.getSelectedParent());
             bookmarkList.itemModified(selectedIndex, false);
