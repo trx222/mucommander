@@ -1,28 +1,26 @@
 package com.mucommander.commons.file.impl.sftp;
 
-import com.mucommander.commons.file.AuthException;
 import com.mucommander.commons.file.Credentials;
 import com.mucommander.commons.file.FileURL;
 import com.mucommander.commons.file.connection.ConnectionHandler;
-import com.sshtools.net.SocketTransport;
-import com.sshtools.publickey.InvalidPassphraseException;
-import com.sshtools.publickey.SshPrivateKeyFile;
-import com.sshtools.publickey.SshPrivateKeyFileFactory;
-import com.sshtools.sftp.SftpClient;
-import com.sshtools.sftp.SftpStatusException;
-import com.sshtools.sftp.SftpSubsystemChannel;
-import com.sshtools.ssh.*;
-import com.sshtools.ssh.components.SshKeyPair;
-import com.sshtools.ssh2.*;
+import net.schmizz.sshj.SSHClient;
+import net.schmizz.sshj.sftp.SFTPClient;
+import net.schmizz.sshj.transport.verification.PromiscuousVerifier;
+import net.schmizz.sshj.userauth.keyprovider.KeyProvider;
+import net.schmizz.sshj.userauth.method.AuthKeyboardInteractive;
+import net.schmizz.sshj.userauth.method.AuthMethod;
+import net.schmizz.sshj.userauth.method.AuthPassword;
+import net.schmizz.sshj.userauth.method.AuthPublickey;
+import net.schmizz.sshj.userauth.method.ChallengeResponseProvider;
+import net.schmizz.sshj.userauth.password.PasswordUtils;
+import net.schmizz.sshj.userauth.password.Resource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
-import java.util.Collections;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -31,166 +29,11 @@ import java.util.List;
  * @author Maxence Bernard, Vassil Dichev
  */
 class SFTPConnectionHandler extends ConnectionHandler {
+
     private static final Logger LOGGER = LoggerFactory.getLogger(SFTPConnectionHandler.class);
 
-    Ssh2Client sshClient;
-    SftpClient sftpClient;
-    SftpSubsystemChannel sftpSubsystem;
-
-    /** 'Password' SSH authentication method */
-    private final static String PASSWORD_AUTH_METHOD = "password";
-
-    /** 'Keyboard interactive' SSH authentication method */
-    private final static String KEYBOARD_INTERACTIVE_AUTH_METHOD = "keyboard-interactive";
-
-    /** 'Public key' SSH authentication method, not supported at the moment */
-    private final static String PUBLIC_KEY_AUTH_METHOD = "publickey";
-
-
-    SFTPConnectionHandler(FileURL location) {
-        super(location);
-    }
-
-
-    @Override
-    public void startConnection() throws IOException {
-        LOGGER.info("starting connection to {}", realm);
-        try {
-            FileURL realm = getRealm();
-
-            // Retrieve credentials to be used to authenticate
-            final Credentials credentials = getCredentials();
-
-            // Throw an AuthException if no auth information, required for SSH
-            if (credentials == null) {
-                throwAuthException("Login and password required");  // Todo: localize this entry
-            }
-
-            LOGGER.trace("creating SshClient");
-
-
-            // Override default port (22) if a custom port was specified in the URL
-            int port = realm.getPort();
-            if (port == -1) {
-                port = 22;
-            }
-
-            // Connect to server, no host key verification
-            SshConnector con = SshConnector.createInstance();
-            // Lets do some host key verification
-            HostKeyVerification hkv = (hostname, key) -> {
-                try {
-                    System.out.println("The connected host's key ("+ key.getAlgorithm() + ") is");
-                    System.out.println(key.getFingerprint());
-                } catch (SshException ignore) {}
-                return true;
-            };
-
-            con.getContext().setHostKeyVerification(hkv);
-            con.getContext().setPreferredPublicKey(Ssh2Context.PUBLIC_KEY_SSHDSS);
-
-            // Init SSH client
-            sshClient = (Ssh2Client) con.connect(new SocketTransport(realm.getHost(), port), credentials.getLogin(), true);
-
-
-//            sshClient.connect(realm.getHost(), port, new IgnoreHostKeyVerification());
-
-            // Retrieve a list of available authentication methods on the server.
-            // Some SSH servers support the 'password' auth method (e.g. OpenSSH on Debian unstable), some don't
-            // and only support the 'keyboard-interactive' method.
-            List<String> authMethods = new ArrayList<>(Arrays.asList(sshClient.getAuthenticationMethods(credentials.getLogin())));
-            LOGGER.info("getAvailableAuthMethods()={}", sshClient.getAuthenticationMethods(credentials.getLogin()));
-
-            // Public key first: the key configured for this server if there is one, otherwise the
-            // standard keys in ~/.ssh, which is what a command line ssh client would reach for.
-            boolean authenticated = false;
-            String configuredKey = realm.getProperty(SFTPFile.PRIVATE_KEY_PATH_PROPERTY_NAME);
-            if (authMethods.contains(PUBLIC_KEY_AUTH_METHOD)) {
-                List<String> keyPaths = configuredKey != null
-                        ? Collections.singletonList(configuredKey)
-                        : findDefaultPrivateKeys();
-                for (String keyPath : keyPaths) {
-                    Ssh2PublicKeyAuthentication pk = createPublicKeyAuthentication(keyPath, credentials);
-                    if (pk != null && tryAuthenticate(pk)) {
-                        LOGGER.info("Authenticated with key {}", keyPath);
-                        authenticated = true;
-                        break;
-                    }
-                }
-            }
-
-            // Fall back to an interactive method when no key got us in. This also covers the case of a
-            // key that the server rejected, where asking for a password is better than giving up.
-            if (!authenticated) {
-                SshAuthentication authClient;
-                // Use 'keyboard-interactive' method only if 'password' auth method is not available and
-                // 'keyboard-interactive' is supported by the server
-                if (!authMethods.contains(PASSWORD_AUTH_METHOD)
-                        && authMethods.contains(KEYBOARD_INTERACTIVE_AUTH_METHOD)) {
-                    LOGGER.info("Using {} authentication method", KEYBOARD_INTERACTIVE_AUTH_METHOD);
-
-                    KBIAuthentication kbi = new KBIAuthentication();
-                    kbi.setUsername(credentials.getLogin());
-
-                    // Fake keyboard password input
-                    kbi.setKBIRequestHandler((name, instruction, prompts) -> {
-                        // Workaround for what seems to be a bug in J2SSH: this method is called twice, first time
-                        // with a valid KBIPrompt array, second time with null
-                        if (prompts == null) {
-                            LOGGER.trace("prompts is null!");
-                            return false;
-                        }
-
-                        for (int i = 0; i < prompts.length; i++) {
-                            LOGGER.trace("prompts[{}]={}", i, prompts[i].getPrompt());
-                            prompts[i].setResponse(credentials.getPassword());
-                        }
-                        return true;
-                    });
-
-                    authClient = kbi;
-                }
-                // Default to 'password' method, even if server didn't report as being supported
-                else {
-                    LOGGER.info("Using {} authentication method", PASSWORD_AUTH_METHOD);
-
-                    Ssh2PasswordAuthentication pwd = new Ssh2PasswordAuthentication();
-                    pwd.setUsername(credentials.getLogin());
-                    pwd.setPassword(credentials.getPassword());
-
-                    authClient = pwd;
-                }
-
-                authenticate(authClient);
-            }
-            // Init SFTP connections
-            sftpClient = new SftpClient(sshClient);
-            SshSession session = sshClient.openSessionChannel();
-
-            if (session instanceof Ssh2Session) {
-                ((Ssh2Session) session).startSubsystem("sftp");
-            }
-            sftpSubsystem = new SftpSubsystemChannel(session);
-            sftpSubsystem.initialize();
-        } catch(IOException | SftpStatusException | SshException | ChannelOpenException e) {
-            LOGGER.info("IOException thrown while starting connection", e);
-            // Disconnect if something went wrong
-            if (sshClient != null && sshClient.isConnected()) {
-                sshClient.disconnect();
-            }
-
-            sshClient = null;
-            sftpClient = null;
-            sftpSubsystem = null;
-
-            // Re-throw exception
-            if (e instanceof IOException) {
-                throw (IOException)e;
-            } else {
-                throw new IOException(e);
-            }
-        }
-    }
+    /** Default port of the SSH protocol. */
+    private static final int DEFAULT_PORT = 22;
 
     /**
      * The private keys a command line ssh client would offer when none was named, in the order it
@@ -198,16 +41,116 @@ class SFTPConnectionHandler extends ConnectionHandler {
      */
     private static final String[] DEFAULT_KEY_NAMES = {"id_ed25519", "id_ecdsa", "id_rsa", "id_dsa"};
 
+    SSHClient sshClient;
+    SFTPClient sftpClient;
+
+    SFTPConnectionHandler(FileURL location) {
+        super(location);
+    }
+
+    @Override
+    public void startConnection() throws IOException {
+        LOGGER.info("starting connection to {}", realm);
+
+        FileURL realm = getRealm();
+        Credentials credentials = getCredentials();
+        if (credentials == null || credentials.getLogin().isEmpty()) {
+            throwAuthException("Login required");  // Todo: localize this entry
+        }
+
+        int port = realm.getPort() == -1 ? DEFAULT_PORT : realm.getPort();
+
+        sshClient = new SSHClient();
+        // Accepts any host key, which is what this client did before. Verifying against known_hosts
+        // would be the safer choice, but needs a way for the user to confirm an unknown host first.
+        sshClient.addHostKeyVerifier(new PromiscuousVerifier());
+        sshClient.connect(realm.getHost(), port);
+
+        // The agent is only needed while authenticating, so it is closed again right afterwards.
+        try (SshAgent agent = openAgent()) {
+            authenticate(credentials, agent);
+        }
+
+        sftpClient = sshClient.newSFTPClient();
+    }
+
     /**
-     * Returns the standard private keys present in the user's <code>.ssh</code> folder.
+     * Opens the running ssh-agent, if there is one.
      *
-     * <p>This is what makes a server reachable without naming a key first: the common case is one
-     * key sitting in its usual place, and having to pick it by hand for every server would be
-     * needless work.</p>
-     *
-     * @return the paths of the keys that exist, in the order they should be tried.
+     * @return the agent, <code>null</code> if none is reachable.
      */
-    private static List<String> findDefaultPrivateKeys() {
+    private static SshAgent openAgent() {
+        try {
+            return SshAgent.open();
+        } catch (IOException e) {
+            LOGGER.info("Cannot reach the ssh agent: {}", e.toString());
+            return null;
+        }
+    }
+
+    /**
+     * Authenticates against the server, offering the methods in the order a command line ssh client
+     * would: the agent first, then key files, and a password only as the last resort.
+     *
+     * @param  credentials the credentials to authenticate with.
+     * @param  agent       the running agent, may be <code>null</code>.
+     * @throws IOException if no method got us in.
+     */
+    private void authenticate(Credentials credentials, SshAgent agent) throws IOException {
+        String login = credentials.getLogin();
+        List<AuthMethod> methods = new ArrayList<>();
+
+        // Keys held by the agent come first: they need no passphrase from us, which is the whole
+        // point of running an agent.
+        if (agent != null) {
+            try {
+                for (SshAgent.Identity identity : agent.getIdentities()) {
+                    methods.add(new AgentAuthMethod(agent, identity));
+                }
+            } catch (IOException e) {
+                LOGGER.info("Cannot read identities from the ssh agent: {}", e.toString());
+            }
+        }
+
+        // Key files: the one configured for this server if there is one, the standard keys otherwise.
+        for (String keyPath : keyCandidates()) {
+            KeyProvider keyProvider = loadKey(keyPath, credentials.getPassword());
+            if (keyProvider != null) {
+                methods.add(new AuthPublickey(keyProvider));
+            }
+        }
+
+        String password = credentials.getPassword();
+        if (password != null && !password.isEmpty()) {
+            methods.add(new AuthPassword(PasswordUtils.createOneOff(password.toCharArray())));
+            methods.add(new AuthKeyboardInteractive(new PasswordResponseProvider(password)));
+        }
+
+        if (methods.isEmpty()) {
+            throwAuthException("No authentication method available");  // Todo: localize this entry
+        }
+
+        try {
+            sshClient.auth(login, methods);
+            LOGGER.info("authenticated as {}", login);
+        } catch (IOException e) {
+            LOGGER.info("Authentication failed for {}", login, e);
+            throwAuthException(e.getMessage());
+        }
+    }
+
+    /**
+     * Returns the key files to offer: the one configured for this server, or failing that the
+     * standard keys found in the user's <code>.ssh</code> folder.
+     *
+     * @return the paths of the keys to try, in order.
+     */
+    private List<String> keyCandidates() {
+        String configuredKey = realm.getProperty(SFTPFile.PRIVATE_KEY_PATH_PROPERTY_NAME);
+        if (configuredKey != null && !configuredKey.isEmpty()) {
+            return Collections.singletonList(configuredKey);
+        }
+
         List<String> paths = new ArrayList<>();
         File sshFolder = new File(System.getProperty("user.home"), ".ssh");
         for (String name : DEFAULT_KEY_NAMES) {
@@ -220,99 +163,84 @@ class SFTPConnectionHandler extends ConnectionHandler {
     }
 
     /**
-     * Builds public key authentication from the key stored at the given path.
+     * Loads one private key, using the password as its passphrase where the key is encrypted.
      *
-     * @param  keyPath     path of the private key.
-     * @param  credentials the credentials, whose password doubles as the key's passphrase.
-     * @return the authentication, <code>null</code> if the key cannot be read or unlocked.
+     * @param  keyPath    path of the key file.
+     * @param  passphrase passphrase to try, may be <code>null</code>.
+     * @return the key, <code>null</code> if it cannot be read or unlocked.
      */
-    private Ssh2PublicKeyAuthentication createPublicKeyAuthentication(String keyPath, Credentials credentials) {
-        try (FileInputStream in = new FileInputStream(keyPath)) {
-            SshPrivateKeyFile keyFile = SshPrivateKeyFileFactory.parse(in);
-            SshKeyPair pair = keyFile.toKeyPair(keyFile.isPassphraseProtected() ? credentials.getPassword() : null);
-
-            Ssh2PublicKeyAuthentication pk = new Ssh2PublicKeyAuthentication();
-            pk.setUsername(credentials.getLogin());
-            pk.setPrivateKey(pair.getPrivateKey());
-            pk.setPublicKey(pair.getPublicKey());
-            return pk;
-        } catch (IOException | InvalidPassphraseException e) {
-            // An unreadable key or a wrong passphrase only rules out this one key, so the next
-            // candidate and ultimately password authentication still get their turn.
+    private KeyProvider loadKey(String keyPath, String passphrase) {
+        try {
+            return passphrase == null || passphrase.isEmpty()
+                    ? sshClient.loadKeys(keyPath)
+                    : sshClient.loadKeys(keyPath, passphrase.toCharArray());
+        } catch (IOException e) {
+            // An unreadable key or a wrong passphrase only rules out this one key; the remaining
+            // candidates and finally password authentication still get their turn.
             LOGGER.info("Cannot use key {}: {}", keyPath, e.toString());
             return null;
         }
     }
 
-    /**
-     * Attempts one authentication without treating a rejection as an error, so that further keys and
-     * methods can be tried afterwards.
-     *
-     * @param  authClient the authentication to attempt.
-     * @return <code>true</code> if it succeeded.
-     */
-    private boolean tryAuthenticate(SshAuthentication authClient) {
-        try {
-            return sshClient.authenticate(authClient) == SshAuthentication.COMPLETE;
-        } catch (Exception e) {
-            LOGGER.info("Authentication attempt failed", e);
-            return false;
-        }
-    }
-
-    private void authenticate(SshAuthentication authClient) throws SshException, AuthException {
-        try {
-            int authResult = sshClient.authenticate(authClient);
-
-            // Throw an AuthException if authentication failed
-            if (authResult != SshAuthentication.COMPLETE) {
-                throwAuthException("Login or password rejected");   // Todo: localize this entry
-            }
-
-            LOGGER.info("authentication complete, authResult={}", authResult);
-        } catch(AuthException e) {
-            LOGGER.info("Caught exception while authenticating", e);
-            throw  e;//throwAuthException(e.getMessage());
-        }
-    }
-
-
     @Override
     public synchronized boolean isConnected() {
-        return sshClient != null && sshClient.isConnected()
-            && sftpClient != null && !sftpClient.isClosed()
-            && sftpSubsystem !=null && !sftpSubsystem.isClosed();
+        return sshClient != null && sshClient.isConnected() && sshClient.isAuthenticated() && sftpClient != null;
     }
-
 
     @Override
     public synchronized void closeConnection() {
         if (sftpClient != null) {
             try {
-                sftpClient.quit();
-            } catch(SshException e) {
-                LOGGER.info("IOException caught while calling sftpClient.quit()", e);
+                sftpClient.close();
+            } catch (IOException e) {
+                LOGGER.info("IOException caught while closing the SFTP client", e);
             }
+            sftpClient = null;
         }
-
-        if (sftpSubsystem != null) {
-            try {
-                sftpSubsystem.close();
-            } catch(IOException e) {
-                LOGGER.info("IOException caught while calling sftpChannel.close ()");
-            }
-        }
-
         if (sshClient != null) {
-            sshClient.disconnect();
+            try {
+                sshClient.disconnect();
+            } catch (IOException e) {
+                LOGGER.info("IOException caught while disconnecting", e);
+            }
+            sshClient = null;
         }
     }
-
 
     @Override
     public void keepAlive() {
-        // No-op, keep alive is not available and shouldn't really be necessary, SSH servers such as OpenSSH usually
-        // maintain connections open without limit.
+        // No-op, as before.
     }
 
+    /**
+     * Answers every keyboard-interactive prompt with the same password, which is how a server that
+     * offers no plain password method is dealt with.
+     */
+    private static class PasswordResponseProvider implements ChallengeResponseProvider {
+
+        private final String password;
+
+        PasswordResponseProvider(String password) {
+            this.password = password;
+        }
+
+        @Override
+        public List<String> getSubmethods() {
+            return Collections.emptyList();
+        }
+
+        @Override
+        public void init(Resource resource, String name, String instruction) {
+        }
+
+        @Override
+        public char[] getResponse(String prompt, boolean echo) {
+            return password.toCharArray();
+        }
+
+        @Override
+        public boolean shouldRetry() {
+            return false;
+        }
+    }
 }

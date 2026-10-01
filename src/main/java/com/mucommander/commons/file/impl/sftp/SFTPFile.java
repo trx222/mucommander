@@ -21,15 +21,19 @@ import com.mucommander.commons.file.*;
 import com.mucommander.commons.file.connection.ConnectionHandler;
 import com.mucommander.commons.file.connection.ConnectionPool;
 import com.mucommander.commons.io.*;
-import com.sshtools.sftp.*;
-import com.sshtools.ssh.SshException;
-import com.sshtools.util.UnsignedInteger32;
-import com.sshtools.util.UnsignedInteger64;
+import net.schmizz.sshj.sftp.FileAttributes;
+import net.schmizz.sshj.sftp.FileMode;
+import net.schmizz.sshj.sftp.OpenMode;
+import net.schmizz.sshj.sftp.RemoteFile;
+import net.schmizz.sshj.sftp.RemoteResourceInfo;
+import net.schmizz.sshj.sftp.SFTPException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.EnumSet;
+import java.util.List;
 import java.io.OutputStream;
 
 
@@ -131,10 +135,11 @@ public class SFTPFile extends ProtocolFile {
             // Makes sure the connection is started, if not starts it
             connHandler.checkConnection();
 
-            SftpFile sftpFile;
+            final RemoteFile remoteFile;
             if (exists()) {
-                sftpFile = connHandler.sftpSubsystem.openFile(absPath, append ? SftpSubsystemChannel.OPEN_WRITE | SftpSubsystemChannel.OPEN_APPEND
-                    : SftpSubsystemChannel.OPEN_WRITE | SftpSubsystemChannel.OPEN_TRUNCATE);
+                remoteFile = connHandler.sftpClient.open(absPath, append
+                        ? EnumSet.of(OpenMode.WRITE, OpenMode.APPEND)
+                        : EnumSet.of(OpenMode.WRITE, OpenMode.TRUNC));
 
                 // Update local attributes
                 if (!append) {
@@ -143,10 +148,9 @@ public class SFTPFile extends ProtocolFile {
             } else {
                 // Set new file permissions to 644 octal (420 dec): "rw-r--r--"
                 // Note: by default, permissions for files freshly created is 0 (not readable/writable/executable by anyone)!
-                // TODO pass real type
-                SftpFileAttributes atts = new SftpFileAttributes(connHandler.sftpSubsystem, SftpFileAttributes.SSH_FILEXFER_TYPE_REGULAR);
-                atts.setPermissions(new UnsignedInteger32(0644));
-                sftpFile = connHandler.sftpSubsystem.openFile(absPath, SftpSubsystemChannel.OPEN_WRITE|SftpSubsystemChannel.OPEN_CREATE, atts);
+                remoteFile = connHandler.sftpClient.open(absPath,
+                        EnumSet.of(OpenMode.WRITE, OpenMode.CREAT),
+                        new FileAttributes.Builder().withPermissions(0644).build());
 
                 // Update local attributes
                 fileAttributes.setExists(true);
@@ -154,12 +158,12 @@ public class SFTPFile extends ProtocolFile {
                 fileAttributes.setSize(0);
             }
 
-            // Custom SftpFileOutputStream constructor, not part of the official J2SSH API
-            OutputStream os = new SftpFileOutputStreamEx(sftpFile, append ? getSize() : 0L) {
+            OutputStream os = remoteFile.new RemoteFileOutputStream(append ? getSize() : 0L) {
                 @Override
                 public void close() throws IOException {
-                    // SftpFileOutputStream.close() closes the open SftpFile file handle
                     super.close();
+                    // The stream does not own the remote handle, so it is closed here
+                    remoteFile.close();
 
                     // Release the lock on the ConnectionHandler
                     connHandler.releaseLock();
@@ -179,10 +183,6 @@ public class SFTPFile extends ProtocolFile {
 
             // Re-throw IOException
             throw e;
-        } catch (SftpStatusException | SshException e) {
-            // Release the lock on the ConnectionHandler if the OutputStream could not be created
-            connHandler.releaseLock();
-            throw new IOException(e);
         }
     }
 
@@ -219,7 +219,6 @@ public class SFTPFile extends ProtocolFile {
     @Override
     public void setLastModifiedDate(long lastModified) throws IOException {
         SFTPConnectionHandler connHandler = null;
-        SftpFile sftpFile = null;
         try {
             // Retrieve a ConnectionHandler and lock it
             connHandler = (SFTPConnectionHandler)ConnectionPool.getConnectionHandler(CONN_HANDLER_FACTORY, fileURL, true);
@@ -227,26 +226,18 @@ public class SFTPFile extends ProtocolFile {
             // Makes sure the connection is started, if not starts it
             connHandler.checkConnection();
 
-            // Retrieve an SftpFile instance for write, will throw an IOException if the file does not exist or cannot
-            // be written.
-            // /!\ SftpFile instance must be closed afterwards to release its file handle
-            sftpFile = connHandler.sftpSubsystem.openFile(absPath, SftpSubsystemChannel.OPEN_WRITE);
-            SftpFileAttributes attributes = sftpFile.getAttributes();
-            attributes.setTimes(attributes.getAccessedTime(), new UnsignedInteger64(lastModified/1000));
-            connHandler.sftpSubsystem.setAttributes(sftpFile, attributes);
+            // The access time is carried over, as setting attributes replaces both times at once
+            FileAttributes current = connHandler.sftpClient.stat(absPath);
+            connHandler.sftpClient.setattr(absPath, new FileAttributes.Builder()
+                    .withAtimeMtime(current.getAtime(), lastModified / 1000)
+                    .build());
+
             // Update local attribute copy
             fileAttributes.setDate(lastModified);
-        } catch (SshException | SftpStatusException e) {
+        } catch (IOException e) {
             LOGGER.error("failed to change the modification date of " + absPath, e);
-            throw new IOException(e);
+            throw e;
         } finally {
-            // Close SftpFile instance to release its handle
-            if (sftpFile != null) {
-                try {
-                    sftpFile.close();
-                } catch (SftpStatusException | SshException ignore) {}
-            }
-
             // Release the lock on the ConnectionHandler
             if (connHandler != null) {
                 connHandler.releaseLock();
@@ -371,15 +362,10 @@ public class SFTPFile extends ProtocolFile {
             // Makes sure the connection is started, if not starts it
             connHandler.checkConnection();
 
-            try {
-                if (isDirectory()) {
-                    connHandler.sftpSubsystem.removeDirectory(absPath);
-                } else {
-                    connHandler.sftpSubsystem.removeFile(absPath);
-                }
-            } catch (SftpStatusException | SshException e) {
-                e.printStackTrace();
-                throw new IOException(e);
+            if (isDirectory()) {
+                connHandler.sftpClient.rmdir(absPath);
+            } else {
+                connHandler.sftpClient.rm(absPath);
             }
 
             // Update local attributes
@@ -398,8 +384,8 @@ public class SFTPFile extends ProtocolFile {
 
     @Override
     public AbstractFile[] ls() throws IOException {
-        SftpFile[] files = getSftpFiles();
-        int nbFiles = files.length;
+        List<RemoteResourceInfo> files = getSftpFiles();
+        int nbFiles = files.size();
 
         // File doesn't exist, return an empty file array
         if (nbFiles == 0) {
@@ -415,8 +401,8 @@ public class SFTPFile extends ProtocolFile {
         }
 
         // Fill AbstractFile array and discard '.' and '..' files
-        for (SftpFile file : files) {
-            String filename = file.getFilename();
+        for (RemoteResourceInfo file : files) {
+            String filename = file.getName();
             // Discard '.' and '..' files, dunno why these are returned
             if (filename.equals(".") || filename.equals("..")) {
                 continue;
@@ -425,12 +411,7 @@ public class SFTPFile extends ProtocolFile {
             FileURL childURL = (FileURL) fileURL.clone();
             childURL.setPath(parentPath + filename);
 
-            try {
-                children[fileCount++] = FileFactory.getFile(childURL, this, new SFTPFileAttributes(childURL, file.getAttributes()));
-            } catch (SftpStatusException | SshException e) {
-                e.printStackTrace();
-                throw new IOException(e);
-            }
+            children[fileCount++] = FileFactory.getFile(childURL, this, new SFTPFileAttributes(childURL, file.getAttributes()));
         }
 
         // create new array of the exact file count
@@ -443,23 +424,16 @@ public class SFTPFile extends ProtocolFile {
         return children;
     }
 
-    private SftpFile[] getSftpFiles() throws IOException {
+    private List<RemoteResourceInfo> getSftpFiles() throws IOException {
         // Retrieve a ConnectionHandler and lock it
         SFTPConnectionHandler connHandler = (SFTPConnectionHandler)ConnectionPool.getConnectionHandler(CONN_HANDLER_FACTORY, fileURL, true);
-        SftpFile[] files;
         try {
             connHandler.checkConnection();  // Makes sure the connection is started, if not starts it
-    //        connHandler.sftpSubsystem.listChildren(file, files);        // Modified J2SSH method to remove the 100 files limitation
-            // Use SftpClient.ls() rather than SftpChannel.listChildren() as it seems to be working better
-            files = connHandler.sftpClient.ls(absPath);
-        } catch (SftpStatusException | SshException e) {
-            e.printStackTrace();
-            throw new IOException(e);
+            return connHandler.sftpClient.ls(absPath);
         } finally {
             // Release the lock on the ConnectionHandler
             connHandler.releaseLock();
         }
-        return files;
     }
 
 
@@ -471,22 +445,16 @@ public class SFTPFile extends ProtocolFile {
             // Makes sure the connection is started, if not starts it
             connHandler.checkConnection();
 
-            // Note: this J2SSH method has been patched to set the permissions of the new directory to 0755 (rwxr-xr-x)
-            // instead of 0. This patches allows to avoid a 'change permissions' request (cf comment code hereunder).
-            connHandler.sftpSubsystem.makeDirectory(absPath);
-
-//            // Set new directory permissions to 755 octal (493 dec): "rwxr-xr-x"
-//            // Note: by default, permissions for files freshly created is 0 (not readable/writable/executable by anyone)!
-//            connHandler.sftpSubsystem.changePermissions(absPath, 493);
+            // Created with 755 octal (rwxr-xr-x): a directory created with the server's default would
+            // otherwise end up with no permissions at all.
+            connHandler.sftpClient.mkdir(absPath);
+            connHandler.sftpClient.chmod(absPath, 0755);
 
             // Update local attributes
             fileAttributes.setExists(true);
             fileAttributes.setDirectory(true);
             fileAttributes.setDate(System.currentTimeMillis());
             fileAttributes.setSize(0);
-        } catch (SftpStatusException | SshException e) {
-            e.printStackTrace();
-            throw new IOException(e);
         } finally {
             // Release the lock on the ConnectionHandler
             connHandler.releaseLock();
@@ -517,12 +485,7 @@ public class SFTPFile extends ProtocolFile {
             }
 
             // Will throw an IOException if the operation failed
-            try {
-                connHandler.sftpClient.rename(absPath, destFile.getURL().getPath());
-            } catch (SftpStatusException | SshException e) {
-                e.printStackTrace();
-                throw new IOException(e);
-            }
+            connHandler.sftpClient.rename(absPath, destFile.getURL().getPath());
 
             // Update destination file attributes by fetching them from the server
             ((SFTPFileAttributes)destFile.getUnderlyingFileObject()).fetchAttributes();
@@ -628,12 +591,9 @@ public class SFTPFile extends ProtocolFile {
             // Makes sure the connection is started, if not starts it
             connHandler.checkConnection();
 
-            connHandler.sftpSubsystem.changePermissions(absPath, permissions);
+            connHandler.sftpClient.chmod(absPath, permissions);
             // Update local attribute copy
             fileAttributes.setPermissions(new SimpleFilePermissions(permissions));
-        } catch (SftpStatusException | SshException e) {
-            e.printStackTrace();
-            throw new IOException(e);
         } finally {
             // Release the lock on the ConnectionHandler
             if (connHandler != null) {
@@ -650,19 +610,18 @@ public class SFTPFile extends ProtocolFile {
             // Makes sure the connection is started, if not starts it
             connHandler.checkConnection();
 
-            SftpFile sftpFile = connHandler.sftpSubsystem.openFile(absPath, SftpSubsystemChannel.OPEN_READ);
+            final RemoteFile remoteFile = connHandler.sftpClient.open(absPath, EnumSet.of(OpenMode.READ));
 
-            // Custom made constructor, not part of the official J2SSH API
-            return new SftpFileInputStream(sftpFile, offset) {
+            return remoteFile.new RemoteFileInputStream(offset) {
+                @Override
+                public void close() throws IOException {
+                    super.close();
+                    // The stream does not own the remote handle, so it is closed here
+                    remoteFile.close();
 
-                    @Override
-                    public void close() throws IOException {
-                        // SftpFileInputStream.close() closes the open SftpFile file handle
-                        super.close();
-                        // Release the lock on the ConnectionHandler
-                        connHandler.releaseLock();
+                    // Release the lock on the ConnectionHandler
+                    connHandler.releaseLock();
                 }
-
             };
         } catch(IOException e) {
             // Release the lock on the ConnectionHandler if the InputStream could not be created
@@ -670,9 +629,6 @@ public class SFTPFile extends ProtocolFile {
 
             // Re-throw IOException
             throw e;
-        } catch (SshException | SftpStatusException e) {
-            e.printStackTrace();
-            throw new IOException(e);
         }
     }
 
@@ -693,7 +649,7 @@ public class SFTPFile extends ProtocolFile {
 
                 // getSymbolicLinkTarget returns the raw symlink target which can either be an absolute path or a
                 // relative path. If the path is relative preprend the absolute path of the symlink's parent folder.
-                String symlinkTargetPath = connHandler.sftpSubsystem.getSymbolicLinkTarget(fileURL.getPath());
+                String symlinkTargetPath = connHandler.sftpClient.readlink(fileURL.getPath());
                 if (!symlinkTargetPath.startsWith("/")) {
                     String parentPath = fileURL.getParent().getPath();
                     if (!parentPath.endsWith("/")) {
@@ -709,7 +665,7 @@ public class SFTPFile extends ProtocolFile {
                 canonicalPath = canonicalURL.toString(false);
                 canonicalPathFetchedTime = System.currentTimeMillis();
                 return canonicalPath;
-            } catch(IOException | SftpStatusException | SshException e) {
+            } catch(IOException e) {
                 // Simply continue and return the absolute path
             } finally {
                 // Release the lock on the ConnectionHandler
@@ -740,9 +696,9 @@ public class SFTPFile extends ProtocolFile {
             connHandler.checkConnection();
             // getSymbolicLinkTarget returns the raw symlink target which can either be an absolute path or a
             // relative path. If the path is relative preprend the absolute path of the symlink's parent folder.
-            symlinkTargetPath = connHandler.sftpSubsystem.getSymbolicLinkTarget(fileURL.getPath());
+            symlinkTargetPath = connHandler.sftpClient.readlink(fileURL.getPath());
 
-        } catch (IOException | SftpStatusException | SshException e) {
+        } catch (IOException e) {
             symlinkTargetPath = null;
             e.printStackTrace();
         } finally {
@@ -785,7 +741,7 @@ public class SFTPFile extends ProtocolFile {
         }
 
         // this constructor is called by #ls()
-        private SFTPFileAttributes(FileURL url, SftpFileAttributes attrs) {
+        private SFTPFileAttributes(FileURL url, FileAttributes attrs) {
             super(attributeCachingPeriod, false);   // no initial update
 
             this.url = url;
@@ -794,13 +750,11 @@ public class SFTPFile extends ProtocolFile {
             setAttributes(attrs);
             setExists(true);
 
-            // Some information about this value:
-            // FileAttribute#isLink() returns a proper value only for FileAttributes instances that were returned by
-            // SftpFile#ls(). FileAttributes that are returned by SftpSubsystemClient#getAttributes(String) always
-            // return false for isLink().
-            // That means the value of isSymlink is not updated by fetchAttributes(), because if it was, isSymlink
-            // would be false after the first attributes update.
-            this.isSymlink = attrs.isLink();
+            // Only the attributes listed by ls() tell a symlink apart, as they come from lstat and
+            // therefore describe the link itself. stat() follows the link and reports its target, so
+            // fetchAttributes() deliberately leaves this value alone: refreshing it would turn every
+            // symlink into a plain file after the first update.
+            this.isSymlink = attrs.getType() == net.schmizz.sshj.sftp.FileMode.Type.SYMLINK;
 
             updateExpirationDate(); // declare the attributes as 'fresh'
         }
@@ -822,9 +776,9 @@ public class SFTPFile extends ProtocolFile {
                 // isLink because it makes impossible to detect changes in the isLink state. Changes should not happen
                 // very often, but still.
                 // Todo: try and fix for this in J2SSH
-                setAttributes(connHandler.sftpSubsystem.getAttributes(url.getPath()));
+                setAttributes(connHandler.sftpClient.stat(url.getPath()));
                 setExists(true);
-            } catch (IOException | SftpStatusException | SshException e) {
+            } catch (IOException e) {
                 e.printStackTrace();
                 // File doesn't exist on the server
                 setExists(false);
@@ -842,19 +796,20 @@ public class SFTPFile extends ProtocolFile {
         }
 
         /**
-         * Sets the file attributes using the values contained in the specified J2SSH FileAttributes instance.
+         * Sets the file attributes using the values contained in the specified SFTP attributes.
          *
-         * @param attrs J2SSH FileAttributes instance that contains the values to use
+         * @param attrs the attributes reported by the server
          */
-        private void setAttributes(SftpFileAttributes attrs) {
-            setDirectory(attrs.isDirectory());
-            setDate(attrs.getModifiedTime().longValue()*1000);
-            setSize(attrs.getSize().longValue());
+        private void setAttributes(FileAttributes attrs) {
+            setDirectory(attrs.getType() == net.schmizz.sshj.sftp.FileMode.Type.DIRECTORY);
+            // The server reports seconds, the file API works in milliseconds
+            setDate(attrs.getMtime() * 1000);
+            setSize(attrs.getSize());
             setPermissions(new SimpleFilePermissions(
-               attrs.getPermissions().intValue() & PermissionBits.FULL_PERMISSION_INT
+               attrs.getMode().getPermissionsMask() & PermissionBits.FULL_PERMISSION_INT
             ));
-            setOwner(attrs.getUID());
-            setGroup(attrs.getGID());
+            setOwner(String.valueOf(attrs.getUID()));
+            setGroup(String.valueOf(attrs.getGID()));
             setSymlink(isSymlink);
         }
 
@@ -908,34 +863,42 @@ public class SFTPFile extends ProtocolFile {
      */
     private class SFTPRandomAccessInputStream extends RandomAccessInputStream {
 
-        private final SftpFileInputStreamEx in;
+        private final SFTPConnectionHandler connHandler;
+        private final RemoteFile remoteFile;
+
+        /** Read position, kept here as the remote handle is addressed by offset. */
+        private long offset;
 
         private SFTPRandomAccessInputStream() throws IOException {
+            this.connHandler = (SFTPConnectionHandler)ConnectionPool.getConnectionHandler(CONN_HANDLER_FACTORY, fileURL, true);
             try {
-                final SFTPConnectionHandler connHandler = (SFTPConnectionHandler)ConnectionPool.getConnectionHandler(CONN_HANDLER_FACTORY, fileURL, true);
-                    // Makes sure the connection is started, if not starts it
-                    connHandler.checkConnection();
-                SftpFile sftpFile = connHandler.sftpSubsystem.openFile(absPath, SftpSubsystemChannel.OPEN_READ);
-                this.in = new SftpFileInputStreamEx(sftpFile);//SftpFileInputStreamEx)getInputStream();
-            } catch (SftpStatusException | SshException e) {
-                e.printStackTrace();
-                throw new IOException(e);
+                // Makes sure the connection is started, if not starts it
+                connHandler.checkConnection();
+                this.remoteFile = connHandler.sftpClient.open(absPath, EnumSet.of(OpenMode.READ));
+            } catch (IOException e) {
+                // The lock is held until close(), so it has to be given back when opening fails
+                connHandler.releaseLock();
+                throw e;
             }
         }
 
         @Override
         public int read(byte[] b, int off, int len) throws IOException {
-            return in.read(b, off, len);
+            int read = remoteFile.read(offset, b, off, len);
+            if (read > 0) {
+                offset += read;
+            }
+            return read;
         }
 
         @Override
         public int read() throws IOException {
-            return in.read();
+            byte[] single = new byte[1];
+            return read(single, 0, 1) < 0 ? -1 : single[0] & 0xFF;
         }
 
         public long getOffset() {
-            // Custom method, not part of the official J2SSH API
-            return in.getPosition();
+            return offset;
         }
 
         public long getLength() {
@@ -943,13 +906,16 @@ public class SFTPFile extends ProtocolFile {
         }
 
         public void seek(long offset) {
-            // Custom method, not part of the official J2SSH API
-            in.setPosition(offset);
+            this.offset = offset;
         }
 
         @Override
         public void close() throws IOException {
-            in.close();
+            try {
+                remoteFile.close();
+            } finally {
+                connHandler.releaseLock();
+            }
         }
     }
 

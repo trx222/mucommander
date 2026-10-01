@@ -4,7 +4,6 @@ import com.mucommander.commons.file.AbstractFile;
 import com.mucommander.commons.file.AbstractFileTest;
 import com.mucommander.commons.file.FileOperation;
 import com.mucommander.commons.file.FileURL;
-import com.sshtools.sftp.SftpFile;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.io.TempDir;
 

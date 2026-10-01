@@ -191,7 +191,7 @@ dependencies {
     implementation 'net.java.dev.jna:jna-platform:5.18.1'
     implementation 'com.fifesoft.rtext:fife.common:6.0.3'
     implementation 'org.jmdns:jmdns:3.6.3'
-    implementation 'com.sshtools:j2ssh-maverick:1.5.5'
+    implementation 'com.hierynomus:sshj:0.38.0'
     implementation 'org.slf4j:jcl-over-slf4j:2.0.17'
     implementation 'org.slf4j:jul-to-slf4j:2.0.17'
     implementation 'org.slf4j:slf4j-api:2.0.17'
