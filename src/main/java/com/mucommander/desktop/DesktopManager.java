@@ -160,8 +160,10 @@ public class DesktopManager {
         }
         // Known OS adapters.
         registerAdapter(new OpenVMSDesktopAdapter());
-        if (OsFamily.getCurrent() == OsFamily.WINDOWS) {
+        if (OsFamily.getCurrent() == OsFamily.MAC_OS_X) {
             registerAdapter(new OSXDesktopAdapter());
+        }
+        if (OsFamily.getCurrent() == OsFamily.WINDOWS) {
             registerAdapter(new Win9xDesktopAdapter());
             registerAdapter(new WinNtDesktopAdapter());
         }
